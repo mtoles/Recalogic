@@ -57,6 +57,7 @@ The grammar should allow:
 We create a natural language description of the query function.
 For the features "white", "large", "cotton", "Nike", we could have "white, large sweater that is not size large or is from Nike"
 
+
 3. Calculate Edit Distance
 
 d:=dist(q, p) is the minimum number of features that would need to be changed for product p to satisfy query q.
@@ -64,7 +65,7 @@ Calculate this using brute force or some better method
 
 4. Finalization
 
-Save the dataset in a postgres sql database
+Save the dataset in a jsonl file
 
 5. Proof
 
@@ -77,8 +78,8 @@ Do not do this yet
 
 # Technologies
 
-Use VLLM in server mode for inference.
-Connect to it via an OpenAI-compatible interface in Python
+Use GPT-5 via OpenAI API for inference.
+Connect to it via OpenAI Python client
 Use venv
 
 # Features
@@ -86,5 +87,14 @@ Use venv
 - The ability to process only n examples from the dataset, for testing
 - Train/test split as a column in the db
 - Use logging
-- Parallelize VLLM calls
+- Parallelize OpenAI API calls
 - Keep the repo clean
+
+
+# Development Guidelines
+
+Never add dummy code.
+After each time you make a substantial new edit, do:
+1. Run the code to check that it works (its ok if it crashes on features we haven't discussed yet)
+2. If it doesn't work, try to fix it 
+3. Once you have fixed it, provide proof that it is fixed, such as a summary of results
