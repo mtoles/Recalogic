@@ -22,6 +22,7 @@ from utils.retry import retry_with_fallback
 import random
 from random import randint
 import numpy as np
+import re
 
 tqdm.pandas()
 random.seed(42)
@@ -240,6 +241,21 @@ def get_common_and_differentiating_features(
         parsed_response["neither_features"],
     )
 
+def fn_seq_to_nl(seq: List[str], features: List[str]) -> str:
+    """
+    Convert a sequence of tokens to a natural language description.
+    Replace args[i] with features[i]
+    """
+    output = []
+    for token in seq:
+        if re.match(r"args\[(\d+)\]", token):
+            index = int(re.match(r"args\[(\d+)\]", token).group(1))
+            output.append(features[index])
+        else:
+            output.append(token)
+    return " ".join(output)
+
+        
 
 def generate_example(
     common_features: List[str],
@@ -250,6 +266,7 @@ def generate_example(
     """
     Generate a query fn based on a subset of features such that exactly one product satisfies the query function.
     """
+    all_features = common_features + unique_pos_features + unique_neg_features + neither_features
 
     pos_bin_features = (
         [True] * N_FEATURES
@@ -270,14 +287,21 @@ def generate_example(
         features_indices = random.sample(list(range(len(pos_bin_features))), query_len)
         pos_features = [pos_bin_features[i] for i in features_indices]
         neg_features = [neg_bin_features[i] for i in features_indices]
-        query_fn, source_code = generate_random_sat_fn(query_len)
+        query_fn, source_code, seq = generate_random_sat_fn(query_len)
+
+        # calculate nl stuff
+        
         if query_fn(*pos_features) != query_fn(*neg_features):
+            nl_features = [all_features[i] for i in features_indices]
+            nl_query = fn_seq_to_nl(seq, nl_features)
+
             if query_fn(*pos_features):
                 return {
                     "query_fn": query_fn,
                     "source_code": source_code,
                     "pos_features": pos_features,
                     "neg_features": neg_features,
+                    "nl_query": nl_query,
                 }
             else:
                 return {
@@ -285,6 +309,7 @@ def generate_example(
                     "source_code": source_code,
                     "pos_features": neg_features,
                     "neg_features": pos_features,
+                    "nl_query": nl_query,
                 }
         i += 1
         if i > 1000:
