@@ -17,6 +17,7 @@ import pandas as pd
 import os
 import argparse
 from utils.sat import generate_random_sat_fn
+from utils.retry import retry_with_fallback
 
 import random
 from random import randint
@@ -131,47 +132,6 @@ def load_esci_dataset(
     return ds_list
 
 
-def retry_with_fallback(
-    messages: List[Dict[str, str]],
-    validation_func: Callable[[str], bool],
-    max_retries: int = 5,
-    fallback_value: Any = None,
-) -> Any:
-    """
-    Generic retry logic with fallback value for OpenAI API calls.
-
-    Args:
-        messages: List of messages to send to OpenAI API
-        validation_func: Function that validates the LLM response content
-        max_retries: Maximum number of retry attempts
-        fallback_value: Value to return if all retries fail
-
-    Returns:
-        Result of OpenAI API call or fallback_value if all retries fail
-    """
-    for attempt in range(max_retries):
-        response = openai.chat.completions.create(
-            model=MODEL_ID,
-            messages=messages,
-            response_format={"type": "json_object"},
-        )
-
-        # Validate the response content
-        if validation_func(response.choices[0].message.content):
-            logger.info(
-                f"Successfully completed OpenAI API call on attempt {attempt + 1}"
-            )
-            return response
-        else:
-            logger.warning(f"Invalid response on attempt {attempt + 1}, retrying...")
-
-        if attempt == max_retries - 1:
-            logger.error(f"Failed to get valid response after {max_retries} attempts")
-            return fallback_value
-
-    return fallback_value
-
-
 def infer_item_and_features(query: str) -> Dict[str, Any]:
     """
     Extract features from the query using LLM with JSON schema validation and retry logic.
@@ -211,13 +171,14 @@ def infer_item_and_features(query: str) -> Dict[str, Any]:
         validation_func=validate_response,
         max_retries=5,
         fallback_value=None,
+        model_id=MODEL_ID,
     )
 
     if response is None:
         return {"item": query, "features": []}
 
     # Parse the validated response
-    parsed_response = json.loads(response.choices[0].message.content)
+    parsed_response = json.loads(response)
     return parsed_response
 
 
@@ -269,8 +230,9 @@ def get_common_and_differentiating_features(
         validation_func=validate_response,
         max_retries=5,
         fallback_value=None,
+        model_id=MODEL_ID,
     )
-    parsed_response = json.loads(response.choices[0].message.content)
+    parsed_response = json.loads(response)
     return (
         parsed_response["common_features"],
         parsed_response["unique_features_a"],
@@ -563,7 +525,6 @@ def main():
         query_features = query_extraction_result["features"]
         query_item = query_extraction_result["item"]
 
-        # Get 10 common features and 10 differentiating features
         (
             common_pos_features,
             unique_pos_features,
@@ -580,63 +541,6 @@ def main():
         )
 
         raise NotImplementedError("Not implemented")
-        n_features = randint(1, 5)
-        n_uncommon_features = randint(1, n_features)
-        n_common_features = n_features - n_uncommon_features
-        common_features = random.sample(common_features, n_common_features)
-        uncommon_features = random.sample(
-            unique_pos_features + unique_neg_features, n_uncommon_features
-        )
-
-        exact_product = example  # Placeholder
-        sub_irr_product = example  # Placeholder
-
-        generated_features = generate_features_from_products(
-            query, exact_product, sub_irr_product, query_features
-        )
-        all_features = query_features + generated_features
-
-        # Determine feature applicability for products
-        exact_features = determine_feature_applicability(exact_product, all_features)
-        sub_irr_features = determine_feature_applicability(
-            sub_irr_product, all_features
-        )
-
-        # Step 3: Boolean Query Generation
-        boolean_expression = generate_random_boolean_expression(all_features)
-        natural_query = boolean_expression_to_natural_language(
-            boolean_expression, all_features
-        )
-
-        # Step 4: Product Selection and Distance Calculation
-        # Check if exact product satisfies the boolean query
-        if evaluate_boolean_expression(boolean_expression, exact_features):
-            positive_product = exact_product
-
-            # Check if substitute/irrelevant doesn't satisfy (making it hard negative)
-            if not evaluate_boolean_expression(boolean_expression, sub_irr_features):
-                hard_negative_product = sub_irr_product
-
-                # Select easy negative
-                easy_negative_product = select_easy_negative(train_ds, positive_product)
-
-                # Calculate edit distance
-                edit_distance = calculate_edit_distance(
-                    boolean_expression, sub_irr_features
-                )
-
-                # Step 5: Dataset Assembly - Create example record
-                example_record = create_example_record(
-                    natural_query,
-                    boolean_expression,
-                    positive_product,
-                    hard_negative_product,
-                    easy_negative_product,
-                    all_features,
-                    edit_distance,
-                )
-
-                final_examples.append(example_record)
 
     # Add train/test split
     logger.info(f"Generated {len(final_examples)} valid examples")
