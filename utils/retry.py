@@ -1,10 +1,12 @@
 import json
 import logging
 import os
-from typing import List, Dict, Callable, Any
+from typing import List, Dict, Callable, Any, Optional
 from joblib import Memory
 import openai
 from dotenv import load_dotenv
+from vllm import LLM, SamplingParams
+from copy import deepcopy
 
 # Load environment variables from .env file
 load_dotenv()
@@ -25,12 +27,19 @@ MODEL_PRICING = {
 }
 
 
+def is_gpt_model(model_id: str) -> bool:
+    """Check if the model is a GPT model (OpenAI)."""
+    return model_id.startswith("gpt-") or model_id in MODEL_PRICING
+
+
 def get_model_pricing(model_id: str) -> tuple:
     """Get input and output pricing for a model."""
     if model_id not in MODEL_PRICING:
-        raise ValueError(
-            f"Unsupported model: {model_id}. Supported models: {list(MODEL_PRICING.keys())}"
+        # For non-GPT models, return 0 cost (or could raise an error)
+        logger.warning(
+            f"No pricing info for model: {model_id}, assuming free/local model"
         )
+        return 0.0, 0.0
     pricing = MODEL_PRICING[model_id]
     return pricing["input"], pricing["output"]
 
@@ -40,38 +49,71 @@ def make_hashable(messages: List[Dict[str, str]]) -> str:
     return json.dumps(messages, sort_keys=True)
 
 
+def _vllm_api_call(messages: List[Dict[str, str]], model_id: str) -> str:
+    """Make an API call using vLLM for HuggingFace models."""
+    # Prevent debugger from attaching to vLLM subprocesses (fixes Python 3.12 'imp' module error)
+    # This is necessary because vLLM spawns subprocesses for model inspection,
+    # and the VS Code debugger (debugpy) has compatibility issues with Python 3.12
+    os.environ["PYDEVD_DISABLE_FILE_VALIDATION"] = "1"
+    if "PYTHONBREAKPOINT" in os.environ:
+        del os.environ["PYTHONBREAKPOINT"]
+
+    llm = LLM(model=model_id, trust_remote_code=True, disable_log_stats=True)
+
+    # Set up sampling parameters
+    sampling_params = SamplingParams(
+        temperature=0.0,
+        max_tokens=2048,
+    )
+
+    # Use chat method with OpenAI-compatible format
+    outputs = llm.chat(messages=[messages], sampling_params=sampling_params)
+    response_text = outputs[0].outputs[0].text.strip()
+
+    logger.debug(f"vLLM call completed ({model_id})")
+
+    return response_text
+
+
 def _make_api_call(messages_json: str, model_id: str) -> str:
-    """Raw OpenAI call without caching."""
+    """Route to OpenAI or vLLM based on model type."""
     global total_tokens_used, total_api_calls, total_cost
 
     messages = json.loads(messages_json)
-    response = openai.chat.completions.create(
-        model=model_id,
-        messages=messages,
-        response_format={"type": "json_object"},
-        reasoning_effort="minimal",
-    )
 
-    # Track costs
-    total_api_calls += 1
-    usage = response.usage
-    if usage:
-        input_tokens = usage.prompt_tokens
-        output_tokens = usage.completion_tokens
-        total_tokens_used += input_tokens + output_tokens
-
-        # Calculate cost using model-specific pricing (per million tokens)
-        input_price, output_price = get_model_pricing(model_id)
-        input_cost = (input_tokens / 1_000_000) * input_price
-        output_cost = (output_tokens / 1_000_000) * output_price
-        call_cost = input_cost + output_cost
-        total_cost += call_cost
-
-        logger.debug(
-            f"API call #{total_api_calls} ({model_id}): {input_tokens} input + {output_tokens} output tokens = ${call_cost:.4f}"
+    # Check if this is a GPT model or a HuggingFace model
+    if is_gpt_model(model_id):
+        # Use OpenAI API
+        response = openai.chat.completions.create(
+            model=model_id,
+            messages=messages,
+            response_format={"type": "json_object"},
+            reasoning_effort="low",
         )
 
-    return response.choices[0].message.content
+        # Track costs
+        total_api_calls += 1
+        usage = response.usage
+        if usage:
+            input_tokens = usage.prompt_tokens
+            output_tokens = usage.completion_tokens
+            total_tokens_used += input_tokens + output_tokens
+
+            # Calculate cost using model-specific pricing (per million tokens)
+            input_price, output_price = get_model_pricing(model_id)
+            input_cost = (input_tokens / 1_000_000) * input_price
+            output_cost = (output_tokens / 1_000_000) * output_price
+            call_cost = input_cost + output_cost
+            total_cost += call_cost
+
+            logger.debug(
+                f"API call #{total_api_calls} ({model_id}): {input_tokens} input + {output_tokens} output tokens = ${call_cost:.4f}"
+            )
+
+        return response.choices[0].message.content
+    else:
+        # Use vLLM for HuggingFace models
+        return _vllm_api_call(messages, model_id)
 
 
 @memory.cache
@@ -88,16 +130,21 @@ def _uncached_api_call(messages_json: str, model_id: str) -> str:
 def retry_with_fallback(
     messages: List[Dict[str, str]],
     validation_func: Callable[[str], bool],
+    model_id: str,
     max_retries: int = 5,
     fallback_value: Any = None,
-    model_id: str = "gpt-5-mini",
 ) -> Any:
-    messages_json = make_hashable(messages)
 
     # Check environment variable for cache setting (defaults to True)
     use_cache = os.getenv("USE_CACHE", "True").lower() in ("true", "1", "yes")
-
+    original_messages = deepcopy(messages)
     for attempt in range(max_retries):
+        messages = deepcopy(original_messages)
+        if attempt > 0:
+            messages[0]["content"] += f"\n\n(attempt no. {attempt + 1})"
+        else:
+            pass
+        messages_json = make_hashable(messages)
         try:
             if use_cache:
                 content = _cached_api_call(messages_json, model_id)

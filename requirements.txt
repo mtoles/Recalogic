@@ -4,3 +4,6 @@ openai>=1.0.0
 datasets>=2.0.0
 jsonschema
 python-dotenv
+sentence-transformers>=2.2.0
+torch>=2.0.0
+vllm>=0.6.0

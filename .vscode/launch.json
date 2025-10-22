@@ -11,12 +11,16 @@
             "program": "${workspaceFolder}/main.py",
             "console": "integratedTerminal",
             "justMyCode": true,
+            "subProcess": false,
             "args": [
                 "--n-examples",
-                "1000"
+                "500",
+                "--model-id",
+                // "meta-llama/Llama-3.1-8B-Instruct"
+                "gpt-5-nano"
             ],
             "env": {
-                // "USE_CACHE": "False"
+                "CUDA_VISIBLE_DEVICES": "2,3"
             }
         },
         {
@@ -29,6 +33,34 @@
             "args": [
                 "--n-vars",
                 "3"
+            ]
+        },
+        {
+            "name": "train.py",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/train.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                "--dataset",
+                "${workspaceFolder}/dataset/feature-distance-dataset_gpt-5-nano_1000.jsonl",
+                "--model",
+                "all-MiniLM-L6-v2",
+                "--output",
+                "${workspaceFolder}/models/sbert-contrastive",
+                "--loss",
+                "cosine",
+                "--batch-size",
+                "16",
+                "--epochs",
+                "4",
+                "--warmup-steps",
+                "100",
+                "--eval-steps",
+                "500",
+                "--seed",
+                "42",
             ]
         }
     ]

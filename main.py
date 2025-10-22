@@ -22,7 +22,7 @@ import numpy as np
 import re
 from copy import deepcopy
 
-from utils.sat import generate_random_sat_fn
+from utils.sat import generate_random_sat_fn, generate_simple_sat_fn
 from utils.retry import retry_with_fallback, print_cost_report
 
 
@@ -32,7 +32,6 @@ np.random.seed(42)
 
 # Configuration
 N_FEATURES = 5
-MAX_QUERY_LEN = 5
 ESCI_DATASET_URL = "https://huggingface.co/datasets/tasksource/esci"
 # MODEL_ID = "gpt-5-mini"
 MODEL_ID = "gpt-5-nano"
@@ -80,10 +79,10 @@ def load_esci_dataset(
     else:
         json_filepath = f"dataset/{split}.jsonl"
 
-    # Check if JSON file exists
-    if os.path.exists(json_filepath):
-        logger.info(f"Loading dataset from cached file: {json_filepath}")
-        return load_dataset_jsonl(json_filepath)
+    # # Check if JSON file exists
+    # if os.path.exists(json_filepath):
+    #     logger.info(f"Loading dataset from cached file: {json_filepath}")
+    #     return load_dataset_jsonl(json_filepath)
 
     logger.info(f"JSON file {json_filepath} not found. Loading from HuggingFace...")
 
@@ -94,19 +93,23 @@ def load_esci_dataset(
 
     # Convert to df
     df = pd.DataFrame(dataset)
+    print(f"irrelevant examples: {df[df['esci_label'] == 'Irrelevant']}")
+    print(f"substitute examples: {df[df['esci_label'] == 'Substitute']}")
+    print(f"exact examples: {df[df['esci_label'] == 'Exact']}")
     logger.info(f"Loaded {len(df)} examples from {split} dataset")
     subs_df = df[
         df["esci_label"].progress_apply(lambda x: x in ["Substitute", "Irrelevant"])
     ]
 
-    def find_exact(query_id):
-        hits = df[(df["query_id"] == query_id) & (df["esci_label"] == "Exact")]
-        if len(hits) > 0:
-            return hits.sample(1).index[0]
-        else:
-            return None
-
-    subs_df["exact_id"] = subs_df["query_id"].progress_apply(find_exact)
+    # Create a lookup dictionary for exact matches - O(n) preprocessing
+    exact_lookup = {}
+    for idx, row in df[df["esci_label"] == "Exact"].iterrows():
+        query_id = row["query_id"]
+        if query_id not in exact_lookup:
+            exact_lookup[query_id] = idx
+    
+    # Map to exact_id using dictionary lookup - O(1) per lookup
+    subs_df["exact_id"] = subs_df["query_id"].map(exact_lookup)
     subs_df = subs_df[subs_df["exact_id"].notna()]
     subs_df["exact_id"] = subs_df["exact_id"].astype(int)
 
@@ -195,7 +198,7 @@ def get_common_and_differentiating_features(
     """
     Get the common and differentiating features between the positive and substitute/irrelevant products.
     """
-    similar_prompt = "Product A: {positive_product}\nProduct B: {substitute_irrelevant_product}\n\nList up to {N_FEATURES} features common to both products, {N_FEATURES} features unique to product A, and {N_FEATURES} Features unique to product B, and {N_FEATURES} features that do not apply to either product. Features should be objective and no more than 5 words. Return ONLY JSON: {{'common_features': ['feature1', 'feature2', ...], 'unique_features_a': ['feature1', 'feature2', ...], 'unique_features_b': ['feature1', 'feature2', ...], 'neither_features': ['feature1', 'feature2', ...]}}"
+    similar_prompt = "### Product A:\n\n{positive_product}\n\n### Product B:\n\n{substitute_irrelevant_product}\n\nList up to {N_COMMON_FEATURES} features common to both products (\"common_features\"), up to {N_FEATURES} features unique to product A (\"unique_features_a\"), up to {N_FEATURES} features unique to product B (\"unique_features_b\"), and up to {N_FEATURES} features that do not apply to either product (\"neither_features\")). When generating common_features, ensure they are present in both products in some way. For example, if product A is \"low fat\" and product B in \"low sugar\", then \"low calories\" could be in common_features. If there are fewer than {N_COMMON_FEATURES} common features, generate as many as possible. Do not assume anything about products not written in the description. When generating neither_features, ensure they are opposite or mutually exclusive with features in one or both of the products. For example, if product A is \"red\" and product B is \"orange\", then \"blue\" could be in neither_features. Do not generate negated features, such as \"not red\". Use your imagination and create diverse neither_features. All features should be objective and no more than 5 words. Return ONLY JSON: {{'common_features': ['feature1', 'feature2', ...], 'unique_features_a': ['feature1', 'feature2', ...], 'unique_features_b': ['feature1', 'feature2', ...], 'neither_features': ['feature1', 'feature2', ...]}}"
     messages = [
         {
             "role": "user",
@@ -203,6 +206,7 @@ def get_common_and_differentiating_features(
                 positive_product=positive_product,
                 substitute_irrelevant_product=substitute_irrelevant_product,
                 N_FEATURES=N_FEATURES,
+                N_COMMON_FEATURES=N_FEATURES // 2,
             ),
         }
     ]
@@ -264,66 +268,108 @@ def fn_seq_to_nl(seq: List[str], features: List[str]) -> str:
 
 
 def generate_example(
+    item: str,
     common_features: List[str],
     unique_pos_features: List[str],
     unique_neg_features: List[str],
     neither_features: List[str],
+    max_distance: int,
 ) -> Dict[str, Any]:
     """
     Generate a query fn based on a subset of features such that exactly one product satisfies the query function.
     """
-    all_features = (
-        common_features + unique_pos_features + unique_neg_features + neither_features
-    )
+    # all_features = (
+    #     common_features + unique_pos_features + unique_neg_features + neither_features
+    # )
 
-    pos_bin_features = (
-        [True] * len(common_features)
-        + [True] * len(unique_pos_features)
-        + [False] * len(unique_neg_features)
-        + [False] * len(neither_features)
-    )
-    neg_bin_features = (
-        [True] * len(common_features)
-        + [False] * len(unique_pos_features)
-        + [True] * len(unique_neg_features)
-        + [False] * len(neither_features)
-    )
-    i = 0
-    while True:
-        # common, pos, neg, neither
-        query_len = randint(1, MAX_QUERY_LEN)
-        features_indices = random.sample(list(range(len(pos_bin_features))), query_len)
-        pos_features = [pos_bin_features[i] for i in features_indices]
-        neg_features = [neg_bin_features[i] for i in features_indices]
-        query_fn, source_code, seq = generate_random_sat_fn(query_len)
+    # pos_bin_features = (
+    #     [True] * len(common_features)
+    #     + [True] * len(unique_pos_features)
+    #     + [False] * len(unique_neg_features)
+    #     + [False] * len(neither_features)
+    # )
+    # neg_bin_features = (
+    #     [True] * len(common_features)
+    #     + [False] * len(unique_pos_features)
+    #     + [True] * len(unique_neg_features)
+    #     + [False] * len(neither_features)
+    # )
+
+    # Randomly pick a target distance for this example
+
+    # common, pos, neg, neither
+    query_distance = randint(1, max_distance)
+    # features_indices = random.sample(list(range(len(pos_bin_features))), query_distance)
+    # sample query_distance features from pos_bin_features and negations of neg_bin_features
+    n_pos_features = min(randint(0, query_distance), len(unique_pos_features))
+    n_neg_features = min(query_distance - n_pos_features, len(unique_neg_features))
+    n_common_features = min(randint(0, query_distance), len(common_features))
+    n_neither_features = min(randint(0, query_distance), len(neither_features))
+
+    selected_pos_features_indices    = random.sample(list(range(len(unique_pos_features))), n_pos_features)
+    selected_neg_features_indices    = random.sample(list(range(len(unique_neg_features))), n_neg_features)
+    selected_common_features_indices = random.sample(list(range(len(common_features))), n_common_features)
+    selected_neither_features_indices = random.sample(list(range(len(neither_features))), n_neither_features)
+
+    selected_pos_features = [unique_pos_features[i] for i in selected_pos_features_indices]
+    selected_neg_features = [unique_neg_features[i] for i in selected_neg_features_indices]
+    selected_common_features = [common_features[i] for i in selected_common_features_indices]
+    selected_neither_features = [neither_features[i] for i in selected_neither_features_indices]
+
+    # pos_features = [pos_bin_features[i] for i in features_indices]
+    # neg_features = [neg_bin_features[i] for i in features_indices]
+    # common_features = [common_features[i] for i in features_indices]
+    # query_fn, source_code, seq = generate_random_sat_fn(query_len)
+    # query_fn, source_code, seq = generate_simple_sat_fn(pos_features=pos_features, neg_features=neg_features, common_features=common_features)
+    nl_query = f"I am looking for: \"{item}\" that has {', '.join(selected_pos_features + selected_common_features)} and does not have {', '.join(selected_neg_features + selected_neither_features)}"
+
+    return {
+        "nl_query": nl_query,
+        "selected_pos_features": selected_pos_features,
+        "selected_neg_features": selected_neg_features,
+        "selected_common_features": selected_common_features,
+        "selected_neither_features": selected_neither_features,
+        "query_distance": query_distance,
+        # Store the full generated features
+        "full_common_features": common_features,
+        "full_unique_pos_features": unique_pos_features,
+        "full_unique_neg_features": unique_neg_features,
+        "full_neither_features": neither_features,
+    }
 
         # calculate nl stuff
 
-        if query_fn(*pos_features) != query_fn(*neg_features):
-            nl_features = [all_features[i] for i in features_indices]
-            nl_query = fn_seq_to_nl(seq, nl_features)
-            pos_edit_distance = calculate_edit_distance(query_fn, pos_features)
-            neg_edit_distance = calculate_edit_distance(query_fn, neg_features)
-            assert pos_edit_distance == 0 or neg_edit_distance == 0
-            assert pos_edit_distance != neg_edit_distance
+        # if query_fn(*pos_features) != query_fn(*neg_features):
+        #     nl_features = [all_features[i] for i in features_indices]
+        #     nl_query = fn_seq_to_nl(seq, nl_features)
+        #     pos_edit_distance = calculate_edit_distance(query_fn, pos_features)
+        #     neg_edit_distance = calculate_edit_distance(query_fn, neg_features)
 
-            return {
-                "query_fn": query_fn,
-                "source_code": source_code,
-                "pos_features": (
-                    pos_features if pos_edit_distance == 0 else neg_features
-                ),
-                "neg_features": (
-                    neg_features if pos_edit_distance == 0 else pos_features
-                ),
-                "nl_query": nl_query,
-                "pos_edit_distance": pos_edit_distance,
-                "neg_edit_distance": neg_edit_distance,
-            }
+        #     assert pos_edit_distance == 0 or neg_edit_distance == 0
+        #     assert pos_edit_distance != neg_edit_distance
 
-        i += 1
-        if i > 1000:
-            raise ValueError("Failed to generate a query fn")
+        #     # Check if we found the target distance
+        #     if (
+        #         pos_edit_distance == target_distance
+        #         or neg_edit_distance == target_distance
+        #     ):
+        #         return {
+        #             "query_fn": query_fn,
+        #             "source_code": source_code,
+        #             "pos_features": (
+        #                 pos_features if pos_edit_distance == 0 else neg_features
+        #             ),
+        #             "neg_features": (
+        #                 neg_features if pos_edit_distance == 0 else pos_features
+        #             ),
+        #             "nl_query": nl_query,
+        #             "pos_edit_distance": pos_edit_distance,
+        #             "neg_edit_distance": neg_edit_distance,
+        #         }
+
+        # i += 1
+        # if i > 1000:
+        #     raise ValueError("Failed to generate a query fn")
 
 
 def calculate_edit_distance(query_fn: Callable, product_features: List[bool]) -> int:
@@ -394,11 +440,71 @@ def save_dataset_jsonl(dataset: List[Dict[str, Any]], filepath: str):
 
     with open(filepath, "w", encoding="utf-8") as f:
         for example in dataset:
-            _example = deepcopy(example)
-            _example.pop("query_fn")
-            f.write(json.dumps(_example, ensure_ascii=False) + "\n")
+            # _example = deepcopy(example)
+            # _example.pop("query_fn")
+            f.write(json.dumps(example, ensure_ascii=False) + "\n")
 
     logger.info(f"Dataset saved to {filepath} with {len(dataset)} examples")
+
+
+def generate_dataset_summary_md(dataset: List[Dict[str, Any]], output_filepath: str, n_examples: int = 10):
+    """
+    Generate a markdown summary of the first n examples from the dataset.
+    
+    Args:
+        dataset: List of example records
+        output_filepath: Path for the markdown file
+        n_examples: Number of examples to include in summary (default: 10)
+    """
+    # Create directory if it doesn't exist
+    os.makedirs(os.path.dirname(output_filepath), exist_ok=True)
+    
+    # Take first n examples
+    examples_to_summarize = dataset[:n_examples]
+    
+    with open(output_filepath, "w", encoding="utf-8") as f:
+        f.write("# Dataset Summary\n\n")
+        f.write(f"This document summarizes the first {len(examples_to_summarize)} examples from the dataset.\n\n")
+        
+        for i, example in enumerate(examples_to_summarize, 1):
+            f.write(f"## Example {i}\n\n")
+            
+            # Original query
+            f.write(f"**Original Query:** {example.get('original_query', 'N/A')}\n\n")
+            
+            # Generated query
+            f.write(f"**Generated Query:** {example.get('nl_query', 'N/A')}\n\n")
+            
+            # Positive product
+            pos_product = example.get('positive_product', {})
+            f.write(f"**Positive Product:**\n")
+            f.write(f"- **Title:** {pos_product.get('product_title', 'N/A')}\n")
+            f.write(f"- **Description:** {pos_product.get('product_text', 'N/A')}\n\n")
+            
+            # Hard negative product
+            hard_neg_product = example.get('hard_neg_product', {})
+            f.write(f"**Hard Negative Product:**\n")
+            f.write(f"- **Title:** {hard_neg_product.get('product_title', 'N/A')}\n")
+            f.write(f"- **Description:** {hard_neg_product.get('product_text', 'N/A')}\n\n")
+            
+            # Full features
+            f.write(f"**Full Generated Features:**\n")
+            f.write(f"- **Common Features:** {', '.join(example.get('full_common_features', []))}\n")
+            f.write(f"- **Unique Positive Features:** {', '.join(example.get('full_unique_pos_features', []))}\n")
+            f.write(f"- **Unique Negative Features:** {', '.join(example.get('full_unique_neg_features', []))}\n")
+            f.write(f"- **Neither Features:** {', '.join(example.get('full_neither_features', []))}\n\n")
+            
+            # Selected features (for comparison)
+            f.write(f"**Selected Features (used in query):**\n")
+            f.write(f"- **Selected Positive:** {', '.join(example.get('selected_pos_features', []))}\n")
+            f.write(f"- **Selected Negative:** {', '.join(example.get('selected_neg_features', []))}\n")
+            f.write(f"- **Selected Common:** {', '.join(example.get('selected_common_features', []))}\n")
+            f.write(f"- **Selected Neither:** {', '.join(example.get('selected_neither_features', []))}\n")
+            f.write(f"- **Query Distance:** {example.get('query_distance', 'N/A')}\n\n")
+            
+            f.write("---\n\n")
+    
+    logger.info(f"Dataset summary saved to {output_filepath}")
 
 
 def parse_arguments():
@@ -412,6 +518,18 @@ def parse_arguments():
         default=None,
         help="Number of examples to process (default: None for all examples)",
     )
+    parser.add_argument(
+        "--max-distance",
+        type=int,
+        default=10,
+        help="Maximum distance to generate examples for",
+    )
+    parser.add_argument(
+        "--model-id",
+        type=str,
+        default="gpt-5-nano",
+        help="Model ID to use for inference (default: gpt-5-nano)",
+    )
     return parser.parse_args()
 
 
@@ -420,9 +538,13 @@ def main():
     # Parse command line arguments
     args = parse_arguments()
 
+    # Set global MODEL_ID from command line argument
+    global MODEL_ID
+    MODEL_ID = args.model_id
+
     # Step 0: Setup and Configuration
     logger = setup_logging()
-    logger.info(f"Starting Logical Recall Pipeline with n_examples={args.n_examples}")
+    logger.info(f"Starting Logical Recall Pipeline with n_examples={args.n_examples}, model_id={args.model_id}")
 
     # Step 1: Data Loading and Preprocessing
     train_ds = load_esci_dataset(n_examples=args.n_examples, split="train")
@@ -458,18 +580,21 @@ def main():
         ) = get_common_and_differentiating_features(
             example["positive_product"], example["hard_neg_product"]
         )
-        example = generate_example(
-            common_features,
-            unique_pos_features,
-            unique_neg_features,
-            neither_features,
+        generated_example = generate_example(
+            item=query_item,
+            common_features=common_features,
+            unique_pos_features=unique_pos_features,
+            unique_neg_features=unique_neg_features,
+            neither_features=neither_features,
+            max_distance=args.max_distance,
         )
-        example["item"] = query_item
-        example["features"] = query_features
-        example["common_features"] = common_features
-        example["unique_pos_features"] = unique_pos_features
-        example["unique_neg_features"] = unique_neg_features
-        example["neither_features"] = neither_features
+        # check there are no overlapping keys between example and generated_example
+        if set(example.keys()) & set(generated_example.keys()):
+            raise ValueError("Overlapping keys between example and generated_example")
+        # rename example["query"] to example["original_query"]
+        example["original_query"] = example.pop("query")
+
+        example.update(generated_example)
         examples.append(example)
 
     # Print cost report after processing
@@ -479,10 +604,16 @@ def main():
 
     # Step 6: Output Generation
     logger.info("Saving dataset...")
-    output_file = f"dataset/feature-distance-dataset_{MODEL_ID}_{args.n_examples}.jsonl"
+    output_file = f"dataset/feature-distance-dataset_{args.model_id}_{args.n_examples}.jsonl"
 
     save_dataset_jsonl(examples, output_file)
     logger.info(f"Dataset saved to {output_file}")
+
+    # Step 6.5: Generate markdown summary
+    logger.info("Generating dataset summary...")
+    summary_file = f"dataset/feature-distance-dataset_{args.model_id}_{args.n_examples}_summary.md"
+    generate_dataset_summary_md(examples, summary_file, n_examples=10)
+    logger.info(f"Dataset summary saved to {summary_file}")
 
     # Step 7: Cleanup and Logging
     dataset_size = len(examples) if examples else 0

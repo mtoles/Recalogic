@@ -27,6 +27,7 @@ def get_valid_tokens(seq: List[str]) -> List[str]:
 
 
 def generate_random_sat_fn(n_vars: int) -> str:
+    """Generate a random SAT function including or/and."""
     seq = []
     while n_vars > 0:
         valid_next = get_valid_tokens(seq)
@@ -49,6 +50,10 @@ def generate_random_sat_fn(n_vars: int) -> str:
     source_code = f"def fn(*args):\n\treturn {' '.join(seq)}"
     exec(source_code, ns)
     return ns["fn"], source_code, seq
+
+def generate_simple_sat_fn(n_vars: int) -> str:
+    """Generate a simple SAT function consisting of only required/forbidden features."""
+    distance = random.randint(1, n_vars)
 
 
 def main():
