@@ -59,7 +59,28 @@
                 "ours-mse"
             ],
             "env": {
-                "CUDA_VISIBLE_DEVICES": "0"
+                "CUDA_VISIBLE_DEVICES": "4"
+            }
+        },
+        {
+            "name": "train_fork.py (accelerate)",
+            "type": "python",
+            "request": "launch",
+            "module": "accelerate.commands.launch",
+            "console": "integratedTerminal",
+            // "justMyCode": false,
+            "args": [
+                "--num_processes",
+                "4",
+                "train_fork.py",
+                "--training-style",
+                "baseline-triplet",
+                "--dataset",
+                // "dataset/feature-distance-dataset_gemini-2.5-flash-lite_None.jsonl"
+                "dataset/feature-distance-dataset_gemini-2.5-flash-lite_10000.jsonl"
+            ],
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "2,4,5,6"
             }
         }
     ]

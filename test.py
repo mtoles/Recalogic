@@ -1,115 +1,91 @@
-import time
-import openai
-from utils.retry import retry_with_fallback
-from dotenv import load_dotenv
+#!/usr/bin/env python3
+"""
+GPU Status Checker
+Checks the status of all available GPUs (up to 8)
+"""
 
-# Load environment variables
-load_dotenv()
+import subprocess
+import sys
 
+def check_gpus_with_torch():
+    """Check GPU status using PyTorch"""
+    try:
+        import torch
+        
+        if not torch.cuda.is_available():
+            print("❌ CUDA is not available")
+            return False
+        
+        gpu_count = torch.cuda.device_count()
+        print(f"✅ Found {gpu_count} GPU(s)\n")
+        
+        for i in range(min(gpu_count, 8)):
+            try:
+                props = torch.cuda.get_device_properties(i)
+                memory_allocated = torch.cuda.memory_allocated(i) / 1024**3
+                memory_reserved = torch.cuda.memory_reserved(i) / 1024**3
+                memory_total = props.total_memory / 1024**3
+                
+                print(f"GPU {i}: {props.name}")
+                print(f"  └─ Total Memory: {memory_total:.2f} GB")
+                print(f"  └─ Allocated: {memory_allocated:.2f} GB")
+                print(f"  └─ Reserved: {memory_reserved:.2f} GB")
+                print(f"  └─ Available: {memory_total - memory_reserved:.2f} GB")
+                print(f"  └─ Compute Capability: {props.major}.{props.minor}")
+                print()
+            except Exception as e:
+                print(f"GPU {i}: ⚠️  Error reading properties - {e}\n")
+        
+        return True
+    except ImportError:
+        return False
 
-def simple_api_call(messages, model_id):
-    """Simple API call without retry or JSON formatting."""
-    response = openai.chat.completions.create(
-        model=model_id,
-        messages=messages,
-    )
-    return response.choices[0].message.content
-
-
-def test_with_retry_and_json(prompts, model_id):
-    """Test with retry mechanism and JSON formatting."""
-    print("=" * 60)
-    print("TESTING WITH RETRY AND JSON FORMATTING")
-    print("=" * 60)
-
-    results = []
-    for i, prompt in enumerate(prompts):
-        messages = [{"role": "user", "content": prompt}]
-
-        def always_true(_):
-            return True  # Accept any response
-
-        start = time.time()
-        response = retry_with_fallback(
-            messages=messages,
-            validation_func=always_true,
-            max_retries=3,
-            fallback_value="No response",
-            model_id=model_id,
+def check_gpus_with_nvidia_smi():
+    """Check GPU status using nvidia-smi"""
+    try:
+        result = subprocess.run(
+            ['nvidia-smi', '--query-gpu=index,name,memory.total,memory.used,memory.free,temperature.gpu,utilization.gpu,power.draw', 
+             '--format=csv,noheader,nounits'],
+            capture_output=True,
+            text=True,
+            check=True
         )
-        elapsed = time.time() - start
-        print(f"Prompt {i+1}: {prompt}")
-        print(f"Response: {response}")
-        print(f"Time taken: {elapsed:.3f} seconds\n")
-        results.append((prompt, response, elapsed))
-
-    return results
-
-
-def test_without_retry_and_json(prompts, model_id):
-    """Test without retry mechanism and JSON formatting."""
-    print("=" * 60)
-    print("TESTING WITHOUT RETRY AND JSON FORMATTING")
-    print("=" * 60)
-
-    # Remove JSON formatting from prompts
-    simple_prompts = [
-        "What is the capital of France?",
-        "Summarize the theory of relativity in one sentence.",
-        "List three uses for a paperclip.",
-    ]
-
-    results = []
-    for i, prompt in enumerate(simple_prompts):
-        messages = [{"role": "user", "content": prompt}]
-
-        start = time.time()
-        response = simple_api_call(messages, model_id)
-        elapsed = time.time() - start
-        print(f"Prompt {i+1}: {prompt}")
-        print(f"Response: {response}")
-        print(f"Time taken: {elapsed:.3f} seconds\n")
-        results.append((prompt, response, elapsed))
-
-    return results
-
+        
+        lines = result.stdout.strip().split('\n')
+        print(f"✅ Found {len(lines)} GPU(s)\n")
+        
+        for line in lines[:8]:  # Limit to 8 GPUs
+            parts = [p.strip() for p in line.split(',')]
+            if len(parts) >= 8:
+                idx, name, total_mem, used_mem, free_mem, temp, util, power = parts
+                print(f"GPU {idx}: {name}")
+                print(f"  └─ Memory: {used_mem}/{total_mem} MB ({free_mem} MB free)")
+                print(f"  └─ Temperature: {temp}°C")
+                print(f"  └─ Utilization: {util}%")
+                print(f"  └─ Power Draw: {power}W")
+                print()
+        
+        return True
+    except FileNotFoundError:
+        print("❌ nvidia-smi not found")
+        return False
+    except subprocess.CalledProcessError as e:
+        print(f"❌ nvidia-smi error: {e}")
+        return False
 
 def main():
-    prompts = [
-        "What is the capital of France? Please respond in JSON format.",
-        "Summarize the theory of relativity in one sentence. Return your answer as JSON.",
-        "List three uses for a paperclip. Format your response as JSON.",
-    ]
-    model_id = "gpt-5-nano"
-
-    # Test with retry and JSON formatting
-    retry_results = test_with_retry_and_json(prompts, model_id)
-
-    # Test without retry and JSON formatting
-    simple_results = test_without_retry_and_json(prompts, model_id)
-
-    # Calculate and compare average latencies
-    retry_times = [result[2] for result in retry_results]
-    simple_times = [result[2] for result in simple_results]
-
-    retry_avg = sum(retry_times) / len(retry_times)
-    simple_avg = sum(simple_times) / len(simple_times)
-
-    print("=" * 60)
-    print("LATENCY COMPARISON")
-    print("=" * 60)
-    print(f"With retry + JSON formatting:")
-    print(f"  Individual times: {[f'{t:.3f}s' for t in retry_times]}")
-    print(f"  Average latency: {retry_avg:.3f} seconds")
-    print()
-    print(f"Without retry + JSON formatting:")
-    print(f"  Individual times: {[f'{t:.3f}s' for t in simple_times]}")
-    print(f"  Average latency: {simple_avg:.3f} seconds")
-    print()
-    print(f"Difference: {retry_avg - simple_avg:.3f} seconds")
-    print(f"Speedup: {retry_avg / simple_avg:.2f}x faster without retry/JSON")
-    print("=" * 60)
-
+    print("=" * 50)
+    print("GPU Status Check")
+    print("=" * 50 + "\n")
+    
+    # Try PyTorch first (more detailed info)
+    if not check_gpus_with_torch():
+        # Fall back to nvidia-smi
+        if not check_gpus_with_nvidia_smi():
+            print("❌ No GPU detection method available")
+            print("   Please install PyTorch or ensure nvidia-smi is in PATH")
+            sys.exit(1)
 
 if __name__ == "__main__":
     main()
+
