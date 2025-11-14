@@ -59,7 +59,7 @@
                 // "ours-mse"
                 "baseline-triplet",
                 "--dataset",
-                "dataset/feature-distance-dataset_gemini-2.5-flash-lite_10000.jsonl"
+                "dataset/processed/feature-distance-dataset_gemini-2.5-flash-lite_10000/"
             ],
             "env": {
                 "CUDA_VISIBLE_DEVICES": "2"
@@ -80,7 +80,7 @@
                 "baseline-triplet",
                 "--dataset",
                 // "dataset/feature-distance-dataset_gemini-2.5-flash-lite_None.jsonl"
-                "dataset/feature-distance-dataset_gemini-2.5-flash-lite_10000.jsonl"
+                "dataset/processed/feature-distance-dataset_gemini-2.5-flash-lite_10000/"
             ],
             "env": {
                 "CUDA_VISIBLE_DEVICES": "2,4,5,6"
