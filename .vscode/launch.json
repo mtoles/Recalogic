@@ -36,17 +36,6 @@
             ]
         },
         {
-            "name": "train.py",
-            "type": "python",
-            "request": "launch",
-            "program": "${workspaceFolder}/train.py",
-            "console": "integratedTerminal",
-            "justMyCode": true,
-            "args": [
-
-            ]
-        },
-        {
             "name": "train_fork.py",
             "type": "python",
             "request": "launch",
@@ -54,12 +43,12 @@
             "console": "integratedTerminal",
             // "justMyCode": false,
             "args": [
-                "--use-synthetic-data",
+                // "--use-synthetic-data",
                 "--training-style",
                 // "ours-mse"
                 "baseline-triplet",
-                "--dataset",
-                "dataset/processed/feature-distance-dataset_gemini-2.5-flash-lite_10000/"
+                // "--dataset",
+                // "dataset/processed/feature-distance-dataset_gemini-2.5-flash-lite_10000/"
             ],
             "env": {
                 "CUDA_VISIBLE_DEVICES": "2"
