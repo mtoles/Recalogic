@@ -1,0 +1,14 @@
+*/__pycache__
+.venv
+*.json
+*.jsonl
+wandb
+models
+dataset
+checkpoints
+.vscode
+.dataset_cache
+.claude
+.cache
+.cursorrules
+run.sh

@@ -1,0 +1,22 @@
+model_name: microsoft/mpnet-base
+training_style: baseline-triplet
+
+training_args:
+  output_dir: models/sbert-contrastive
+  num_train_epochs: 1
+  # Use global_batch_size for consistent training dynamics across different GPU counts
+  global_batch_size: 128  # Total batch size across all GPUs (per_device fixed at 32)
+  per_device_max_batch_size: 32
+  learning_rate: 2.0e-5
+  warmup_ratio: 0.1
+  lr_scheduler_type: cosine
+  bf16: true
+  batch_sampler: NO_DUPLICATES
+  eval_strategy: epoch
+  save_strategy: epoch
+  save_total_limit: 2
+  logging_steps: 10
+  report_to: wandb
+
+dataset: dataset/processed/feature-distance-dataset_gemini-2.5-flash-lite_None/
+
