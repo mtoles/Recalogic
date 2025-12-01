@@ -35,8 +35,6 @@ np.random.seed(42)
 # Configuration
 N_FEATURES = 5
 ESCI_DATASET_URL = "https://huggingface.co/datasets/tasksource/esci"
-# MODEL_ID = "gpt-5-mini"
-MODEL_ID = "gpt-5-nano"
 
 # Global logger
 logger = logging.getLogger(__name__)
@@ -127,12 +125,13 @@ def load_esci_dataset(
     return ds_list
 
 
-def infer_item_and_features(query: str) -> Optional[Dict[str, Any]]:
+def infer_item_and_features(query: str, model_id: str) -> Optional[Dict[str, Any]]:
     """
     Extract features from the query using LLM with JSON schema validation and retry logic.
 
     Args:
         query: Natural language query
+        model_id: Model ID to use for inference
 
     Returns:
         Dict containing 'item' and 'features' keys with validated JSON structure
@@ -166,7 +165,7 @@ def infer_item_and_features(query: str) -> Optional[Dict[str, Any]]:
         validation_func=validate_response,
         max_retries=5,
         fallback_value=None,
-        model_id=MODEL_ID,
+        model_id=model_id,
     )
 
     if response is None:
@@ -178,7 +177,7 @@ def infer_item_and_features(query: str) -> Optional[Dict[str, Any]]:
 
 
 def get_common_and_differentiating_features(
-    positive_product: Dict[str, Any], substitute_irrelevant_product: Dict[str, Any]
+    positive_product: Dict[str, Any], substitute_irrelevant_product: Dict[str, Any], model_id: str
 ) -> Optional[Tuple[List[str], List[str], List[str], List[str]]]:
     """
     Get the common and differentiating features between the positive and substitute/irrelevant products.
@@ -226,7 +225,7 @@ def get_common_and_differentiating_features(
         validation_func=validate_response,
         max_retries=5,
         fallback_value=None,
-        model_id=MODEL_ID,
+        model_id=model_id,
     )
     
     if response is None:
@@ -380,7 +379,7 @@ def process_single_example(example: Dict[str, Any], max_distance: int, model_id:
     query = example["query"]
     
     # Step 2: Feature Extraction Pipeline
-    query_extraction_result = infer_item_and_features(query)
+    query_extraction_result = infer_item_and_features(query, model_id)
     if query_extraction_result is None:
         return None
     query_features = query_extraction_result["features"] if "features" in query_extraction_result else []
@@ -392,7 +391,7 @@ def process_single_example(example: Dict[str, Any], max_distance: int, model_id:
         unique_neg_features,
         neither_features,
     ) = get_common_and_differentiating_features(
-        example["positive_product"], example["hard_neg_product"]
+        example["positive_product"], example["hard_neg_product"], model_id
     )
     if common_features is None or unique_pos_features is None or unique_neg_features is None or neither_features is None:
         return None
@@ -637,7 +636,7 @@ def main():
                     logger.info(f"Processing example {i}...")
 
                 # Step 2: Feature Extraction Pipeline
-                query_extraction_result = infer_item_and_features(query)
+                query_extraction_result = infer_item_and_features(query, args.model_id)
                 query_features = query_extraction_result["features"] if "features" in query_extraction_result else []
                 query_item = query_extraction_result["item"]
 
@@ -647,7 +646,7 @@ def main():
                     unique_neg_features,
                     neither_features,
                 ) = get_common_and_differentiating_features(
-                    example["positive_product"], example["hard_neg_product"]
+                    example["positive_product"], example["hard_neg_product"], args.model_id
                 )
                 generated_example = generate_example(
                     item=query_item,
