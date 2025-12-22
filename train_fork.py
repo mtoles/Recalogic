@@ -184,6 +184,8 @@ def main():
         dataset = dataset.remove_columns(["nl_query"])
     
     if config["training_style"] == TrainingStyle.BASELINE_TRIPLET.value:
+        # Keep only easy examples (query_distance == -1) for baseline
+        dataset = dataset.filter(lambda x: x["query_distance"] == -1)
         dataset = dataset.remove_columns(["query_distance"])
     elif config["training_style"] == TrainingStyle.OURS_MSE.value:
         dataset = dataset.rename_column("query_distance", "label")
